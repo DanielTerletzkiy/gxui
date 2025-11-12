@@ -1,15 +1,13 @@
 {
   "name": "gxui",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "An expandable UI framework for GxEPD2_4G_BW displays",
   "keywords": "GxEPD2, GxEPD2_4G_BW, ui",
-  "repository":
-  {
+  "repository": {
     "type": "git",
     "url": "https://github.com/DanielTerletzkiy/gxui.git"
   },
-  "authors":
-  [
+  "authors": [
     {
       "name": "Daniel Terletzkiy",
       "email": "daniel@terletzkiy.de",
