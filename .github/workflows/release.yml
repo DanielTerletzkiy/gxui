@@ -1,0 +1,137 @@
+name: Bump version and tag on merge to master
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type (patch|minor|major)"
+        required: false
+        default: "patch"
+
+permissions:
+  contents: write
+
+env:
+  # Comma-separated GitHub usernames allowed to perform automated releases
+  ALLOWED_ACTORS: "DanielTerletzkiy"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify actor is allowed
+        id: verify
+        run: |
+          IFS=',' read -ra ALLOWED <<< "$ALLOWED_ACTORS"
+          allowed=false
+          for a in "${ALLOWED[@]}"; do
+            if [ "${a// /}" = "${GITHUB_ACTOR}" ]; then
+              allowed=true
+              break
+            fi
+          done
+          echo "actor=$GITHUB_ACTOR"
+          if [ "$allowed" != "true" ]; then
+            echo "Actor $GITHUB_ACTOR is not allowed to run this release workflow. Skipping."
+            echo "allowed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "allowed=true" >> $GITHUB_OUTPUT
+
+      - name: Stop if not allowed
+        if: steps.verify.outputs.allowed != 'true'
+        run: echo "Not allowed; exiting gracefully." && exit 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Determine bump type
+        id: bump
+        run: |
+          # Determine bump type from workflow_dispatch input or fallback to 'patch'
+          bump_type="${{ github.event.inputs.bump }}"
+          if [ -z "$bump_type" ]; then bump_type=patch; fi
+          echo "type=$bump_type" >> $GITHUB_OUTPUT
+
+      - name: Bump version in library.json
+        id: bumpver
+        run: |
+          FILE=library.json
+          if [ ! -f "$FILE" ]; then
+            echo "library.json not found" >&2
+            exit 1
+          fi
+          old=$(jq -r .version "$FILE")
+          if [ -z "$old" ] || ! [[ "$old" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid or missing version in library.json: $old" >&2
+            exit 1
+          fi
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$old"
+          case "${{ steps.bump.outputs.type }}" in
+            major)
+              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor)
+              MINOR=$((MINOR+1)); PATCH=0 ;;
+            *)
+              PATCH=$((PATCH+1)) ;;
+          esac
+          new_ver="$MAJOR.$MINOR.$PATCH"
+          jq ".version=\"$new_ver\"" "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+          echo "old=$old" >> $GITHUB_OUTPUT
+          echo "new=$new_ver" >> $GITHUB_OUTPUT
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit version bump if changed
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit."
+          else
+            git add library.json
+            git commit -m "chore(release): bump version to ${{ steps.bumpver.outputs.new }}"
+          fi
+
+      - name: Create tag if not exists
+        id: tag
+        run: |
+          TAG="v${{ steps.bumpver.outputs.new }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
+            echo "created=false" >> $GITHUB_OUTPUT
+          else
+            git tag "$TAG"
+            echo "created=true" >> $GITHUB_OUTPUT
+            echo "name=$TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push changes and tags
+        if: steps.tag.outputs.created == 'true'
+        run: |
+          git push origin HEAD:master
+          git push origin --tags
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          draft: false
+          prerelease: false
+          body: |
+            Automated release by ${{ github.actor }}.
+            Previous version: ${{ steps.bumpver.outputs.old }}
+            New version: ${{ steps.bumpver.outputs.new }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
